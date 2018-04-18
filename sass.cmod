@@ -18,7 +18,7 @@
 
 DECLARATIONS
 
-#ifdef HAVE_LIBSASS
+#ifdef HAVE_SASS_H
 
 #include "pike_sass.h"
 #include <sass.h>
