@@ -18,23 +18,27 @@
 
 DECLARATIONS
 
-#ifdef HAVE_SASS_H
+#ifdef HAVE_LIBSASS
 
 #include "pike_sass.h"
 #include <sass.h>
 
 /*! @module Tools
  */
-/*! @module __Sass
- *! @appears Tools.Sass
+/*! @module Sass
  */
 /*! @class Api
- *! @appears Tools.Sass.Compiler
+ *!
+ *! Low-level Sass/SCSS compiler.
+ *!
+ *! You probably want to use @[Compiler] instead of this class.
+ *!
+ *! @seealso
+ *!   @[Compiler]
  */
 PIKECLASS Api
 {
   /*! @decl int(0..3) output_style = 0
-   *! @appears Tools.Sass.Compiler.output_style
    *!
    *! Determines the level of compression on the generated output.
    *!
@@ -45,14 +49,12 @@ PIKECLASS Api
   PIKEVAR int(0..3)    output_style;
 
   /*! @decl string(8bit) source_map_file = UNDEFINED
-   *! @appears Tools.Sass.Compiler.source_map_file
    *!
    *! Set the path of the source map file.
    */
   PIKEVAR string(8bit) source_map_file;
 
   /*! @decl string(8bit) source_map_root
-   *! @appears Tools.Sass.Compiler.source_map_root
    *!
    *! Set the root path of the source files, relative to where the source.map
    *! file is written.
@@ -60,7 +62,6 @@ PIKECLASS Api
   PIKEVAR string(8bit) source_map_root;
 
   /*! @decl string(8bit) include_path
-   *! @appears Tools.Sass.Compiler.include_path
    *!
    *! The base path of @tt{@@import@}s. Note! This needs to be set when
    *! @[compile_string()] is used.
@@ -68,14 +69,12 @@ PIKECLASS Api
   PIKEVAR string(8bit) include_path;
 
   /*! @decl int precision
-   *! @appears Tools.Sass.Compiler.precision
    *!
    *! Set the precision of fractional numbers. Default is @tt{5@}.
    */
   PIKEVAR int(0..)     precision;
 
   /*! @decl bool source_comments
-   *! @appears Tools.Sass.Compiler.source_comments
    *!
    *! Emit comments in the generated CSS indicating the corresponding source
    *! line. Default is @tt{false@}.
@@ -83,14 +82,12 @@ PIKECLASS Api
   PIKEVAR int(0..1)    source_comments;
 
   /*! @decl bool source_map_embed
-   *! @appears Tools.Sass.Compiler.source_map_embed
    *!
    *! Set whether embedding @tt{sourceMappingUrl=#@} as data uri or not.
    */
   PIKEVAR int(0..1)    source_map_embed;
 
   /*! @decl bool omit_source_map_url
-   *! @appears Tools.Sass.Compiler.omit_source_map_url
    *!
    *! Set whether writing the @tt{sourceMappingUrl=#@} or not.
    */
@@ -146,32 +143,36 @@ PIKECLASS Api
 
   // Libsass import callback. This will be called for every @import directive
   // in the Sass files. See the doc comment for __importer_cb.
-  //
-  // FIXME: We probably ought to catch thrown errors from the Pike layer here
-  //        and clean up the libsass stuff before really throwing?
   Sass_Import_List pike_sass_importer (const char *path, Sass_Importer_Entry cb,
                                        struct Sass_Compiler *comp)
   {
     if (THIS->id_handle_import > -1) {
-      Sass_Import_Entry last_imp;
-      last_imp = sass_compiler_get_last_import (comp);
-
-      push_text (path);
-
+      JMP_BUF recovery;
+      Sass_Import_Entry last_imp = sass_compiler_get_last_import (comp);
       const char *abs_path = sass_import_get_abs_path (last_imp);
       const char *imp_path = sass_import_get_imp_path (last_imp);
+
+      push_text (path);
 
       push_text (abs_path);
       push_text (imp_path);
 
+      if (SETJMP(recovery)) {
+        call_handle_error();
+        return NULL;
+      }
+
       apply_low (Pike_fp->current_object, THIS->id_handle_import, 3);
 
       if (TYPEOF (Pike_sp[-1]) == T_STRING) {
+        Sass_Import_List list;
         if (Pike_sp[-1].u.string->size_shift != eightbit) {
-          Pike_error ("Widestring returned from sass importer. ");
+          Pike_error ("Widestring returned from sass importer.\n");
         }
 
-        Sass_Import_List list = sass_make_import_list (1);
+        UNSETJMP(recovery);
+
+        list = sass_make_import_list (1);
         list[0] = sass_make_import_entry (
                     path,
                     sass_copy_c_string (Pike_sp[-1].u.string->str),
@@ -196,19 +197,22 @@ PIKECLASS Api
           struct pike_string *_data = ITEM(v)[0].u.string;
           // Absolute path of the imported file.
           struct pike_string *_absp = ITEM(v)[1].u.string;
+          Sass_Import_List list;
 
           if (_data->size_shift != eightbit) {
             Pike_error ("Widestring returned in array index one from "
-                        "importer function. ");
+                        "importer function.\n");
           }
 
           if (_absp->size_shift != eightbit) {
             Pike_error ("Widestring returned in array index two from "
-                        "importer function. ");
+                        "importer function.\n");
           }
 
-          Sass_Import_List list = sass_make_import_list (1);
-          list[0] = sass_make_import (path, (const char*) _absp->str,
+          UNSETJMP(recovery);
+
+          list = sass_make_import_list (1);
+          list[0] = sass_make_import (path, _absp->str,
                                       // libsass takes ownership of _data->str
                                       // and will free it when the context
                                       // is destroyd, hence the copy.
@@ -217,6 +221,8 @@ PIKECLASS Api
           return list;
         }
       }
+
+      UNSETJMP(recovery);
     }
 
     return NULL;
@@ -227,8 +233,7 @@ PIKECLASS Api
   {
     struct Sass_Options *s_opts = sass_context_get_options (ctx);
 
-    Sass_Importer_Entry c_imp;
-    c_imp = sass_make_importer (pike_sass_importer, 0, 0);
+    Sass_Importer_Entry c_imp = sass_make_importer (pike_sass_importer, 0, 0);
 
     Sass_Importer_List imp_list = sass_make_importer_list (1);
     sass_importer_set_list_entry (imp_list, 0, c_imp);
@@ -247,10 +252,12 @@ PIKECLASS Api
   // This method is over ridden in the the pmod.
   PIKEFUN mapping(string(8bit):string(8bit)) compile_file (string input_file)
   {
-    SASS_TRACE ("compile_file(%s)\n", input_file->str);
-
     struct Sass_File_Context *ctx;
     struct Sass_Context      *ctx_out;
+    int err;
+    const char *scss;
+
+    SASS_TRACE ("compile_file(%s)\n", input_file->str);
 
     ctx = sass_make_file_context (sass_copy_c_string (input_file->str));
     ctx_out = sass_file_context_get_context (ctx);
@@ -261,15 +268,16 @@ PIKECLASS Api
     // TODO: Since the Pike layer can throw below we should probably catch
     //       that here so we can free the context properly.
 
-    int err = sass_compile_file_context (ctx);
+    err = sass_compile_file_context (ctx);
 
     if (err) {
-      const char *errstr = sass_context_get_error_message (ctx_out);
+      const char *errstr =
+        sass_copy_c_string (sass_context_get_error_message (ctx_out));
       SASS_COMPILE_FILE_ERR ("Sass compile error (code: %d):\n%s\n",
                              err, errstr);
     }
 
-    const char *scss = sass_context_get_output_string (ctx_out);
+    scss = sass_context_get_output_string (ctx_out);
 
     if (scss) {
       const char *smap = NULL;
@@ -279,8 +287,9 @@ PIKECLASS Api
         smap = sass_context_get_source_map_string (ctx_out);
 
         if ((err = sass_context_get_error_status (ctx_out))) {
-          const char *errstr = sass_context_get_error_message (ctx_out);
-          SASS_COMPILE_FILE_ERR ("Failed generating source map (code: %ld): %s",
+          const char *errstr =
+            sass_copy_c_string (sass_context_get_error_message (ctx_out));
+          SASS_COMPILE_FILE_ERR ("Failed generating source map (code: %ld): %s\n",
                                  err, errstr);
         }
       }
@@ -313,7 +322,6 @@ PIKECLASS Api
 
 
   /*! @decl string(8bit) compile_string(string(8bit) source)
-   *! @appears Tools.Sass.Compiler.compile_string()
    *!
    *! Compiles the string @[source] and returns the generated CSS.
    *!
@@ -329,6 +337,8 @@ PIKECLASS Api
   {
     struct Sass_Data_Context *ctx;
     struct Sass_Context      *ctx_out;
+    int err;
+    const char *out;
 
     ctx = sass_make_data_context (sass_copy_c_string (source->str));
     ctx_out = sass_data_context_get_context (ctx);
@@ -341,15 +351,16 @@ PIKECLASS Api
 
     sass_compile_data_context (ctx);
 
-    int err = sass_context_get_error_status (ctx_out);
+    err = sass_context_get_error_status (ctx_out);
 
     if (err) {
-      const char *errstr = sass_context_get_error_message (ctx_out);
-      SASS_COMPILE_STRING_ERR ("Sass compile error (code: %ld):\n%s",
+      const char *errstr =
+        sass_copy_c_string (sass_context_get_error_message (ctx_out));
+      SASS_COMPILE_STRING_ERR ("Sass compile error (code: %ld):\n%s\n",
                                err, errstr);
     }
 
-    const char *out = sass_context_get_output_string (ctx_out);
+    out = sass_context_get_output_string (ctx_out);
 
     if (out) {
       const char *smap = NULL;
@@ -359,8 +370,9 @@ PIKECLASS Api
         smap = sass_context_get_source_map_string (ctx_out);
 
         if ((err = sass_context_get_error_status (ctx_out))) {
-          const char *errstr = sass_context_get_error_message (ctx_out);
-          SASS_COMPILE_STRING_ERR ("Failed generating source map (code: %ld): %s",
+          const char *errstr =
+            sass_copy_c_string (sass_context_get_error_message (ctx_out));
+          SASS_COMPILE_STRING_ERR ("Failed generating source map (code: %ld): %s\n",
                                    err, errstr);
         }
       }
@@ -385,7 +397,7 @@ PIKECLASS Api
   }
 
   INIT {
-    SASS_TRACE ("INIT __Sass.Api\n");
+    SASS_TRACE ("INIT ___Sass.Api\n");
     THIS->precision = 5;
     THIS->output_style = SASS_STYLE_NESTED;
     THIS->id_handle_import =
@@ -399,7 +411,7 @@ PIKECLASS Api
   EXIT
     gc_trivial;
   {
-    SASS_TRACE ("EXIT __Sass.Api\n");
+    SASS_TRACE ("EXIT ___Sass.Api\n");
   }
 }
 /*! @endclass */
@@ -537,7 +549,7 @@ PIKE_MODULE_EXIT
 /*! @endmodule
  */
 
-#else  /* HAVE_SASS_H */
+#else  /* HAVE_LIBSASS */
 
 PIKE_MODULE_INIT {}
 PIKE_MODULE_EXIT {}

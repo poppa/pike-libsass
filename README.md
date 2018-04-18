@@ -1,6 +1,12 @@
 # pike-libsass
 A Pike module wrapper for libsass.
 
+## NOTE! This module will be discontinued in this repository 
+
+Very soon this module will be part of official Pike. It is already included in
+the devel branch of [Pike](https://github.com/pikelang/Pike/tree/8.1/src/post_modules/_Sass). In the official Pike the module will be located in the 
+the `Web` module, so it will be available via `Web.Sass`. 
+
 ## How to install
 
  * `git clone https://github.com/poppa/pike-libsass.git`
